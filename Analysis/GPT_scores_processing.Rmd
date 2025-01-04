@@ -1,0 +1,303 @@
+---
+title: "Capstone - processing GPT scores of CLIP essays"
+author: "Ben Inbar"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Turn off scientific notation unless length is 500
+options(scipen=500)
+
+# View more than 50 columns
+rstudioapi::writeRStudioPreference("data_viewer_max_columns", 100L)
+
+# Includes tidyverse, xlsx, readxl, rmarkdown, knitr
+source("R:\\!Projects\\ACCESS & SUCCESS\\R Syntax\\load_libraries.R")
+library(Metrics)
+library(irr)
+library(stats)
+
+```
+
+```{r Individual scores assigned by GPT ICC analysis}
+
+# Pull in GPT's individual scores for all essays + control papers
+individual_scores <- read_excel(r"(R:\!Projects\CLIP -- CUNY Language Immersion Program\2023-2024\Essays\Manifest+scores.xlsx)", sheet = "GPT - P1 - individual scores") |>
+  clean_names() |>
+  select(-x8) |>
+  left_join(read_excel(r"(R:\!Projects\CLIP -- CUNY Language Immersion Program\2023-2024\Essays\Manifest+scores.xlsx)", sheet = "GPT - P2 - individual scores") |>
+  clean_names()) |>
+  select(-x8) |>
+  left_join(read_excel(r"(R:\!Projects\CLIP -- CUNY Language Immersion Program\2023-2024\Essays\Manifest+scores.xlsx)", sheet = "GPT - P3 - individual scores") |>
+  clean_names()) |>
+  select(-x8)
+
+# Isolate non-control essays only
+non_control <- individual_scores |>
+  filter(!(essay_id %in% c("C1", "C2", "C3", "C4")))
+
+
+# Function to calculate ICC for two columns
+calculate_icc <- function(col1, col2) {
+  icc_result <- icc(data.frame(col1, col2), model = "twoway", type = "agreement", unit = "single")
+}
+
+# Set up column rater pairs
+rater_pairs <- c(seq(3, 7, by=1), seq(13, 17, by=1), seq(23, 27, by=1))
+
+# Empty lists to fill in for loop
+icc_df <- data.frame(value = numeric()
+                          , p = numeric())
+icc_value <- c()
+icc_pvalue <- c()
+# Loop through each column pair for all competency areas
+for (i in rater_pairs) {
+  col1 <- non_control[[i]]       # First rater in the pair
+  col2 <- non_control[[i + 5]]   # Second rater in the pair
+  icc_value <- calculate_icc(col1, col2)$value
+  icc_pvalue <- calculate_icc(col1, col2)$p.value
+  icc_df <- rbind(icc_df
+                  , data.frame(icc_value = icc_value, p = icc_pvalue))
+}
+
+# Final dataframe
+icc <- icc_df |>
+  bind_cols(data.frame(competency_paradigm = c("cr_p1", "org_p1", "dev_p1", "wc_p1", "ssgm_p1", "cr_p2", "org_p2", "dev_p2", "wc_p2", "ssgm_p2", "cr_p3", "org_p3", "dev_p3", "wc_p3", "ssgm_p3"))) |>
+  relocate(competency_paradigm, .before=icc_value)
+
+# Print and paste into thesis document
+print(icc)
+
+```
+
+
+```{r Scatter plots of GPT score trials across competency area}
+
+# Bind score columns for round_1 and round_2 for all essays
+#######################################################
+essays_all <- individual_scores |>
+  filter(!(essay_id %in% c("C1", "C2", "C3", "C4"))) |>
+  select(contains("round_1")) |>
+  pivot_longer(cols = everything()
+               , names_to = 'metric'
+               , values_to = 'score') |>
+  mutate(competency = str_to_upper(str_extract(metric, "(?<=gpt_)\\w+(?=_score)"))
+         , paradigm = str_to_upper(str_extract(metric, "(?<=score_p)\\d"))) |>
+  select(competency, paradigm, score) |>
+  bind_cols(individual_scores |>
+              filter(!(essay_id %in% c("C1", "C2", "C3", "C4"))) |>
+              select(contains("round_2")) |>
+              pivot_longer(cols = everything()
+                           , names_to = 'metric'
+                           , values_to = 'score2') |>
+              select(score2)) |>
+  mutate(count=n(), .by=c('competency', 'paradigm', 'score', 'score2'))
+
+# Plot
+ggplot(essays_all, aes(x = score, y = score2)) +
+  geom_point(aes(size = count, color = competency)) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+   geom_text(
+    data = essays_all |> group_by(competency, paradigm) |>
+      summarise(Pearson_Cor = cor(score, score2, method = "pearson")),
+    aes(label = paste0("r = ", round(Pearson_Cor, 2)), x = Inf, y = Inf),
+    inherit.aes = FALSE, hjust = 1.5, vjust = 2, size = 4
+  ) +
+  labs(
+    title = "Trial 1 vs Trial 2 GPT4o Scores by Competency Area - Student Essays",
+    x = "Scores - Trial 1",
+    y = "Scores - Trial 2",
+    size = "count"
+  ) +
+  facet_grid(paradigm ~ competency, labeller = labeller(paradigm = c('1' = "P1", '2' = "P2", '3' = "P3")), switch = "y") +
+  theme_grey()
+
+
+#######################################################
+# Control papers
+controls <- individual_scores |>
+  filter(essay_id %in% c("C1", "C2", "C3", "C4")) |>
+  select(contains("round_1")) |>
+  pivot_longer(cols = everything()
+               , names_to = 'metric'
+               , values_to = 'score') |>
+  mutate(competency = str_extract(metric, "(?<=gpt_)\\w+(?=_score)")
+         , paradigm = str_extract(metric, "(?<=score_p)\\d")) |>
+  select(competency, paradigm, score) |>
+  bind_cols(individual_scores |>
+              filter(essay_id %in% c("C1", "C2", "C3", "C4")) |>
+              select(contains("round_2")) |>
+              pivot_longer(cols = everything()
+                           , names_to = 'metric'
+                           , values_to = 'score2') |>
+              # mutate(competency = str_extract(metric, "(?<=gpt_)\\w+(?=_score)")
+              #        , paradigm = str_extract(metric, "(?<=score_p)\\d")) |>
+              select(score2)) |>
+  mutate(count=n(), .by=c('competency', 'paradigm', 'score', 'score2'))
+
+# Plot
+ggplot(controls, aes(x = score, y = score2)) +
+  geom_point(aes(size = count, color = competency)) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+   geom_text(
+    data = controls |> group_by(competency, paradigm) |>
+      summarise(Pearson_Cor = cor(score, score2, method = "pearson")),
+    aes(label = paste0("r = ", round(Pearson_Cor, 2)), x = Inf, y = Inf),
+    inherit.aes = FALSE, hjust = 1.5, vjust = 2, size = 4
+  ) +
+  labs(
+    title = "Trial 1 vs Trial 2 GPT4o Scores by Competency Area - Control Papers",
+    x = "Scores - Trial 1",
+    y = "Scores - Trial 2",
+    size = "count"
+  ) +
+  facet_grid(paradigm ~ competency, labeller = labeller(paradigm = c('1' = "P1", '2' = "P2", '3' = "P3")), switch = "y") +
+  theme_grey()
+
+
+```
+
+
+```{r Score averages round 1 vs round 2}
+# Brief examination of mean differences in composites between round 1 and 2
+diff <- individual_scores |>
+  filter(!(essay_id %in% c("C1", "C2", "C3", "C4"))) |>
+  select(matches("gpt_")) |>
+  mutate(across(everything(), ~mean(.))) |>
+  distinct() |>
+  pivot_longer(cols = everything()
+               , names_to = 'metric'
+               , values_to = 'mean') |>
+  arrange(metric) |>
+  mutate(change = c(NA, diff(`mean`))
+         , change = ifelse(str_detect(metric, "round_1"), NA, change)) |>
+  filter(!is.na(change)) |>
+  mutate(competency = str_extract(metric, "(?<=gpt_)\\w+(?=_score)")
+         , paradigm = str_extract(metric, "(?<=score_p)\\d")) |>
+  select(-metric) |>
+  relocate(c(competency, paradigm), .before=`mean`) |>
+  pivot_wider(names_from = competency
+              , values_from = c(`mean`, 'change'))
+
+#print(diff)
+
+```
+
+
+```{r Process composite scores (joins) for Tableau}
+
+# Pull composite scores and join for further Tableau processing
+raw <- read_excel(r"(R:\!Projects\CLIP -- CUNY Language Immersion Program\2023-2024\Essays\Manifest+scores.xlsx)", sheet = "Composites - P1 - SP23") |>
+  clean_names() |>
+  mutate(student_id = str_extract(essay_id, "\\d+")) |>
+  mutate(student_id = ifelse(str_detect(essay_id, "C"), NA_character_, student_id)) |>
+  select(-c(x16, x9)) |>
+  left_join(read_excel(r"(R:\!Projects\CLIP -- CUNY Language Immersion Program\2023-2024\Essays\Manifest+scores.xlsx)", sheet = "Demographics") |>
+              clean_names() |>
+              mutate_all(as.character), by='student_id') |>
+  relocate(c(student_id, age, gender, ethnicity, ethnicity_list), .after=term) |>
+  left_join(read_excel(r"(R:\!Projects\CLIP -- CUNY Language Immersion Program\2023-2024\Essays\Manifest+scores.xlsx)", sheet = "Composites - P2 - SP23") |>
+              clean_names(), by=c("essay_id", "term", "score", "critical_response", "word_choice", "development", "organization", "sentence_structure_grammar_and_mechanics")) |>
+  select(-c(x9, x16)) |>
+  left_join(read_excel(r"(R:\!Projects\CLIP -- CUNY Language Immersion Program\2023-2024\Essays\Manifest+scores.xlsx)", sheet = "Composites - P3 - SP23") |>
+              clean_names(), by=c("essay_id", "term", "score", "critical_response", "word_choice", "development", "organization", "sentence_structure_grammar_and_mechanics")) |>
+  select(-c(x9, x16))
+
+
+# Process anchor scores separately for easier Tableau join
+anchors <- read_excel(r"(R:\!Projects\CLIP -- CUNY Language Immersion Program\2023-2024\Essays\Manifest+scores.xlsx)", sheet = "Anchor scores") |>
+  clean_names() |>
+  rename(essay_id = anchor_essay_id) |>
+  select(-c(x8, x15))
+
+
+# Remove mean from Excel doc
+processed <- raw |>
+  filter(essay_id!="Mean") |>
+  as.data.frame()
+  
+
+# Export for Tableau
+write.csv(processed, r"(R:\!Projects\CLIP -- CUNY Language Immersion Program\2023-2024\Essays\Analysis\processed.csv)", row.names = F, na = "")
+
+write.csv(anchors, r"(R:\!Projects\CLIP -- CUNY Language Immersion Program\2023-2024\Essays\Analysis\processed_anchors.csv)", row.names = F, na = "")
+
+```
+
+
+```{r Tableau validation + median + SD for composite scores}
+# Tableau validation + median + SD for composite scores
+#processed |> distinct(student_id, ethnicity) |> tabyl(ethnicity)
+#processed |> distinct(student_id, gender) |> tabyl(gender)
+
+# Get range and median values for composite scores
+processed |> select(score, gpt_score_p1, gpt_score_p2, gpt_score_p3) |> filter(!(processed$essay_id %in% c("C1", "C2", "C3", "C4", "A", "B", "C"))) |> summary()
+
+# Get standard deviation for composite scores
+processed |> select(score, gpt_score_p1, gpt_score_p2, gpt_score_p3) |> 
+  filter(!(processed$essay_id %in% c("C1", "C2", "C3", "C4", "A", "B", "C"))) |> 
+  mutate(sd_human = sd(score, na.rm=T)
+         , sd_gpt_1 = sd(gpt_score_p1, na.rm=T)
+         , sd_gpt_2 = sd(gpt_score_p2, na.rm=T)
+         , sd_gpt_3 = sd(gpt_score_p3, na.rm=T)) |>
+  select(sd_human:sd_gpt_3) |>
+  distinct()
+
+
+
+```
+
+
+```{r Quadratic Weighted Kappa on composite scores}
+
+# Quadratic Weighted Kappa. Define rater columns to be used as 4 separate dataframes: original scores, gpt paradigm 1, 2, and 3
+orig <- processed |>
+  filter(!(essay_id %in% c("C1", "C2", "C3", "C4"))) |>
+  select(score, critical_response, development, organization, word_choice, sentence_structure_grammar_and_mechanics)
+gpt_1 <- processed |>
+  filter(!(essay_id %in% c("C1", "C2", "C3", "C4"))) |>
+  select(matches("gpt_\\w+_p1"))
+gpt_2 <- processed |>
+  filter(!(essay_id %in% c("C1", "C2", "C3", "C4"))) |>
+  select(matches("gpt_\\w+_p2"))
+gpt_3 <- processed |>
+  filter(!(essay_id %in% c("C1", "C2", "C3", "C4"))) |>
+  select(matches("gpt_\\w+_p3"))
+
+# Create empty lists
+qwk_results_p1 <- numeric(ncol(orig))
+qwk_results_p2 <- numeric(ncol(orig))
+qwk_results_p3 <- numeric(ncol(orig))
+
+
+# for loop to assign QWKs for all paradigms and scores
+for (i in seq_along(orig)) {
+  if (i==1) {
+    qwk_results_p1[i] <- ScoreQuadraticWeightedKappa(orig[[i]], gpt_1[[i]], 0, 60)
+    qwk_results_p2[i] <- ScoreQuadraticWeightedKappa(orig[[i]], gpt_2[[i]], 0, 60)
+    qwk_results_p3[i] <- ScoreQuadraticWeightedKappa(orig[[i]], gpt_3[[i]], 0, 60)
+  }
+  else {
+    qwk_results_p1[i] <- ScoreQuadraticWeightedKappa(orig[[i]], gpt_1[[i]], 0, 12)
+    qwk_results_p2[i] <- ScoreQuadraticWeightedKappa(orig[[i]], gpt_2[[i]], 0, 12)
+    qwk_results_p3[i] <- ScoreQuadraticWeightedKappa(orig[[i]], gpt_3[[i]], 0, 12)
+  }
+}
+
+# Create clean dataframe
+qwk_summary <- data.frame(
+  score_area = c('composite', 'critical response', 'development', 'organization', 'word choice', 'sentence struct')
+  , qwk_p1 = qwk_results_p1
+  , qwk_p2 = qwk_results_p2
+  , qwk_p3 = qwk_results_p3
+)
+
+print(qwk_summary)
+
+```
+
